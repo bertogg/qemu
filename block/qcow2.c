@@ -1812,8 +1812,10 @@ static int qcow2_create2(const char *filename, int64_t total_size,
                          QemuOpts *opts, int version, int refcount_order,
                          Error **errp)
 {
-    /* Calculate cluster_bits */
     int cluster_bits;
+    QDict *options;
+
+    /* Calculate cluster_bits */
     cluster_bits = ctz32(cluster_size);
     if (cluster_bits < MIN_CLUSTER_BITS || cluster_bits > MAX_CLUSTER_BITS ||
         (1 << cluster_bits) != cluster_size)
@@ -1971,9 +1973,11 @@ static int qcow2_create2(const char *filename, int64_t total_size,
      * refcount of the cluster that is occupied by the header and the refcount
      * table)
      */
-    ret = bdrv_open(&bs, filename, NULL, NULL,
+    options = qdict_new();
+    qdict_put(options, "driver", qstring_from_str("qcow2"));
+    ret = bdrv_open(&bs, filename, NULL, options,
                     BDRV_O_RDWR | BDRV_O_CACHE_WB | BDRV_O_NO_FLUSH,
-                    &bdrv_qcow2, &local_err);
+                    NULL, &local_err);
     if (ret < 0) {
         error_propagate(errp, local_err);
         goto out;
@@ -2023,9 +2027,11 @@ static int qcow2_create2(const char *filename, int64_t total_size,
     bs = NULL;
 
     /* Reopen the image without BDRV_O_NO_FLUSH to flush it before returning */
-    ret = bdrv_open(&bs, filename, NULL, NULL,
+    options = qdict_new();
+    qdict_put(options, "driver", qstring_from_str("qcow2"));
+    ret = bdrv_open(&bs, filename, NULL, options,
                     BDRV_O_RDWR | BDRV_O_CACHE_WB | BDRV_O_NO_BACKING,
-                    &bdrv_qcow2, &local_err);
+                    NULL, &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
         goto out;
