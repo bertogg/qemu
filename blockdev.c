@@ -645,7 +645,7 @@ static BlockDriverState *bds_tree_init(QDict *bs_opts, Error **errp)
     }
 
     bs = NULL;
-    ret = bdrv_open(&bs, NULL, NULL, bs_opts, bdrv_flags, NULL, errp);
+    ret = bdrv_open(&bs, NULL, NULL, bs_opts, bdrv_flags, errp);
     if (ret < 0) {
         goto fail_no_bs_opts;
     }
@@ -1626,7 +1626,7 @@ static void external_snapshot_prepare(BlkTransactionState *common,
      * extended QMP command? */
     assert(state->new_bs == NULL);
     ret = bdrv_open(&state->new_bs, new_image_file, NULL, options,
-                    flags | BDRV_O_NO_BACKING, NULL, &local_err);
+                    flags | BDRV_O_NO_BACKING, &local_err);
     /* We will manually add the backing_hd field to the bs later */
     if (ret != 0) {
         error_propagate(errp, local_err);
@@ -2157,7 +2157,7 @@ void qmp_blockdev_change_medium(const char *device, const char *filename,
     }
 
     assert(!medium_bs);
-    ret = bdrv_open(&medium_bs, filename, NULL, options, bdrv_flags, NULL, errp);
+    ret = bdrv_open(&medium_bs, filename, NULL, options, bdrv_flags, errp);
     if (ret < 0) {
         goto fail;
     }
@@ -2820,7 +2820,7 @@ void qmp_drive_backup(const char *device, const char *target,
     }
 
     target_bs = NULL;
-    ret = bdrv_open(&target_bs, target, NULL, options, flags, NULL, &local_err);
+    ret = bdrv_open(&target_bs, target, NULL, options, flags, &local_err);
     if (ret < 0) {
         error_propagate(errp, local_err);
         goto out;
@@ -3085,7 +3085,7 @@ void qmp_drive_mirror(const char *device, const char *target,
      */
     target_bs = NULL;
     ret = bdrv_open(&target_bs, target, NULL, options,
-                    flags | BDRV_O_NO_BACKING, NULL, &local_err);
+                    flags | BDRV_O_NO_BACKING, &local_err);
     if (ret < 0) {
         error_propagate(errp, local_err);
         goto out;
