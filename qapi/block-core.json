@@ -705,6 +705,19 @@
             '*format': 'str', '*mode': 'NewImageMode' } }
 
 ##
+# @BlockdevSnapshot
+#
+# @device: device or node name to generate the snapshot from.
+#
+# @snapshot: reference to the existing block device that will be used
+#            for the snapshot.
+#
+# Since 2.5
+##
+{ 'struct': 'BlockdevSnapshot',
+  'data': { 'device': 'str', 'snapshot': 'str' } }
+
+##
 # @DriveBackup
 #
 # @device: the name of the device which should be copied.
@@ -799,6 +812,19 @@
 ##
 { 'command': 'blockdev-snapshot-sync',
   'data': 'BlockdevSnapshotSync' }
+
+
+##
+# @blockdev-snapshot
+#
+# Generates a snapshot of a block device.
+#
+# For the arguments, see the documentation of BlockdevSnapshot.
+#
+# Since 2.5
+##
+{ 'command': 'blockdev-snapshot',
+  'data': 'BlockdevSnapshot' }
 
 ##
 # @change-backing-file

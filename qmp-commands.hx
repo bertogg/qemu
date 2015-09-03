@@ -1454,6 +1454,34 @@ Example:
 EQMP
 
     {
+        .name       = "blockdev-snapshot",
+        .args_type  = "device:s,snapshot:s",
+        .mhandler.cmd_new = qmp_marshal_input_blockdev_snapshot,
+    },
+
+SQMP
+blockdev-snapshot
+-----------------
+Since 2.5
+
+Create a snapshot of a block device. 'device' and 'snapshot' both
+refer to existing block devices. The former is the one to generate the
+snapshot from, and the latter is the target of the snapshot.
+
+Arguments:
+
+- "device": snapshot source (json-string)
+- "snapshot": snapshot target (json-string)
+
+Example:
+
+-> { "execute": "blockdev-snapshot", "arguments": { "device": "ide-hd0",
+                                                    "snapshot": "node1534" } }
+<- { "return": {} }
+
+EQMP
+
+    {
         .name       = "blockdev-snapshot-internal-sync",
         .args_type  = "device:B,name:s",
         .mhandler.cmd_new = qmp_marshal_input_blockdev_snapshot_internal_sync,
