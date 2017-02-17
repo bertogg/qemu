@@ -2634,6 +2634,11 @@ int qcow2_update_header(BlockDriverState *bs)
                 .bit  = QCOW2_COMPAT_LAZY_REFCOUNTS_BITNR,
                 .name = "lazy refcounts",
             },
+            {
+                .type = QCOW2_FEAT_TYPE_INCOMPATIBLE,
+                .bit  = QCOW2_INCOMPAT_EXTL2_BITNR,
+                .name = "extended L2 tables",
+            },
         };
 
         ret = header_ext_add(buf, QCOW2_EXT_MAGIC_FEATURE_TABLE,
@@ -3126,6 +3131,17 @@ qcow2_co_create(BlockdevCreateOptions *create_options, Error **errp)
         goto out;
     }
 
+    if (!qcow2_opts->has_extended_l2) {
+        qcow2_opts->extended_l2 = false;
+    }
+    if (version < 3 && qcow2_opts->extended_l2) {
+        error_setg(errp, "Extended L2 tables are only supported with "
+                   "compatibility level 1.1 and above (use version=v3 or "
+                   "greater)");
+        ret = -EINVAL;
+        goto out;
+    }
+
     if (!qcow2_opts->has_refcount_bits) {
         qcow2_opts->refcount_bits = 16;
     }
@@ -3218,6 +3234,11 @@ qcow2_co_create(BlockdevCreateOptions *create_options, Error **errp)
     if (qcow2_opts->data_file_raw) {
         header->autoclear_features |=
             cpu_to_be64(QCOW2_AUTOCLEAR_DATA_FILE_RAW);
+    }
+
+    if (qcow2_opts->extended_l2) {
+        header->incompatible_features |=
+            cpu_to_be64(QCOW2_INCOMPAT_EXTL2);
     }
 
     ret = blk_pwrite(blk, 0, header, cluster_size, 0);
@@ -3397,6 +3418,7 @@ static int coroutine_fn qcow2_co_create_opts(const char *filename, QemuOpts *opt
         { BLOCK_OPT_BACKING_FMT,        "backing-fmt" },
         { BLOCK_OPT_CLUSTER_SIZE,       "cluster-size" },
         { BLOCK_OPT_LAZY_REFCOUNTS,     "lazy-refcounts" },
+        { BLOCK_OPT_EXTL2,              "extended-l2" },
         { BLOCK_OPT_REFCOUNT_BITS,      "refcount-bits" },
         { BLOCK_OPT_ENCRYPT,            BLOCK_OPT_ENCRYPT_FORMAT },
         { BLOCK_OPT_COMPAT_LEVEL,       "version" },
@@ -4590,6 +4612,9 @@ static ImageInfoSpecific *qcow2_get_specific_info(BlockDriverState *bs,
             .corrupt            = s->incompatible_features &
                                   QCOW2_INCOMPAT_CORRUPT,
             .has_corrupt        = true,
+            .has_extended_l2    = true,
+            .extended_l2        = s->incompatible_features &
+                                  QCOW2_INCOMPAT_EXTL2,
             .refcount_bits      = s->refcount_bits,
             .has_bitmaps        = !!bitmaps,
             .bitmaps            = bitmaps,
@@ -5154,6 +5179,12 @@ static QemuOptsList qcow2_create_opts = {
             .name = BLOCK_OPT_LAZY_REFCOUNTS,
             .type = QEMU_OPT_BOOL,
             .help = "Postpone refcount updates",
+            .def_value_str = "off"
+        },
+        {
+            .name = BLOCK_OPT_EXTL2,
+            .type = QEMU_OPT_BOOL,
+            .help = "Extended L2 tables",
             .def_value_str = "off"
         },
         {
