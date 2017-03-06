@@ -986,7 +986,7 @@ static int qcow2_update_options_prepare(BlockDriverState *bs,
         }
     }
 
-    r->l2_slice_size = l2_cache_entry_size / sizeof(uint64_t);
+    r->l2_slice_size = l2_cache_entry_size / sizeof(uint64_t) / s->l2_entry_size;
     r->l2_table_cache = qcow2_cache_create(bs, l2_cache_size,
                                            l2_cache_entry_size);
     r->refcount_block_cache = qcow2_cache_create(bs, refcount_cache_size,
@@ -1334,6 +1334,16 @@ static int coroutine_fn qcow2_do_open(BlockDriverState *bs, QDict *options,
             goto fail;
         }
     }
+
+    if (s->incompatible_features & QCOW2_INCOMPAT_EXTL2) {
+        s->subclusters_per_cluster = 32;
+        s->l2_entry_size = 2;
+    } else {
+        s->subclusters_per_cluster = 1;
+        s->l2_entry_size = 1;
+    }
+    s->subcluster_bits = s->cluster_bits - ctz32(s->subclusters_per_cluster);
+    s->subcluster_size = s->cluster_size / s->subclusters_per_cluster;
 
     /* Check support for various header values */
     if (header.refcount_order > 6) {

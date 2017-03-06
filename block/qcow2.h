@@ -277,6 +277,10 @@ typedef struct BDRVQcow2State {
     int cluster_bits;
     int cluster_size;
     int l2_slice_size;
+    int subcluster_size;
+    int subcluster_bits;
+    int subclusters_per_cluster;
+    int l2_entry_size; /* in uint64_t, not bytes */
     int l2_bits;
     int l2_size;
     int l1_size;
