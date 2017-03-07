@@ -513,6 +513,11 @@ static inline int64_t start_of_cluster(BDRVQcow2State *s, int64_t offset)
     return offset & ~(s->cluster_size - 1);
 }
 
+static inline int64_t offset_into_subcluster(BDRVQcow2State *s, int64_t offset)
+{
+    return offset & (s->subcluster_size - 1);
+}
+
 static inline int64_t offset_into_cluster(BDRVQcow2State *s, int64_t offset)
 {
     return offset & (s->cluster_size - 1);
@@ -542,6 +547,11 @@ static inline int offset_to_l2_index(BDRVQcow2State *s, int64_t offset)
 static inline int offset_to_l2_slice_index(BDRVQcow2State *s, int64_t offset)
 {
     return (offset >> s->cluster_bits) & (s->l2_slice_size - 1);
+}
+
+static inline int offset_to_sc_index(BDRVQcow2State *s, int64_t offset)
+{
+    return (offset >> s->subcluster_bits) & (s->subclusters_per_cluster - 1);
 }
 
 static inline int64_t qcow2_vm_state_offset(BDRVQcow2State *s)
