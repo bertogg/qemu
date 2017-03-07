@@ -406,6 +406,48 @@ static int count_contiguous_clusters(BlockDriverState *bs, int nb_clusters,
         return i;
 }
 
+static int count_contiguous_subclusters(BlockDriverState *bs, int nb_clusters,
+                                        unsigned sc_index, uint64_t *l2_slice,
+                                        uint64_t stop_flags)
+{
+    BDRVQcow2State *s = bs->opaque;
+    int i, j, sc = 0;
+    QCow2ClusterType first_cluster_type;
+    uint64_t mask = stop_flags | L2E_OFFSET_MASK | QCOW_OFLAG_COMPRESSED;
+    uint64_t first_entry = be64_to_cpu(l2_slice[L2IDX(0)]);
+    uint64_t offset = first_entry & mask;
+
+    first_cluster_type = qcow2_get_cluster_type(bs, first_entry);
+    if (first_cluster_type == QCOW2_CLUSTER_UNALLOCATED) {
+        return 0;
+    }
+
+    /* must be allocated */
+    assert(first_cluster_type == QCOW2_CLUSTER_NORMAL ||
+           first_cluster_type == QCOW2_CLUSTER_ZERO_ALLOC);
+
+    j = sc_index;
+    for (i = 0; i < nb_clusters; i++) {
+        uint64_t l2_entry = be64_to_cpu(l2_slice[L2IDX(i)]) & mask;
+        uint64_t l2_bitmap = be64_to_cpu(l2_slice[L2BM(i)]);
+        if (offset + (uint64_t) i * s->cluster_size != l2_entry) {
+            goto out;
+        }
+        for (; j < s->subclusters_per_cluster; j++) {
+            if (first_cluster_type == QCOW2_CLUSTER_NORMAL) {
+                if (!(l2_bitmap & QCOW_OFLAG_SUB_ALLOC(j))) {
+                    goto out;
+                }
+            }
+            sc++;
+        }
+        j = 0;
+    }
+
+out:
+    return sc;
+}
+
 /*
  * Checks how many consecutive unallocated clusters in a given L2
  * slice have the same cluster type.
@@ -430,6 +472,31 @@ static int count_contiguous_clusters_unallocated(BlockDriverState *bs,
     }
 
     return i;
+}
+
+static int count_contiguous_subclusters_unallocated(BlockDriverState *bs,
+                                                    int nb_clusters, unsigned sc_index,
+                                                    uint64_t *l2_slice,
+                                                    QCow2ClusterType wanted_type)
+{
+    BDRVQcow2State *s = bs->opaque;
+    int i;
+    int c = count_contiguous_clusters_unallocated(bs, nb_clusters,
+                                                  l2_slice, wanted_type);
+    if (c > 0) {
+        return c * s->subclusters_per_cluster - sc_index;
+    }
+    assert(wanted_type == QCOW2_CLUSTER_UNALLOCATED);
+    uint64_t l2_entry = be64_to_cpu(l2_slice[L2IDX(0)]);
+    uint64_t l2_bitmap = be64_to_cpu(l2_slice[L2BM(0)]);
+
+    for (i = sc_index; i < s->subclusters_per_cluster; i++) {
+        if (qcow2_get_subcluster_type(bs, l2_entry, l2_bitmap, i) != wanted_type) {
+            break;
+        }
+        c++;
+    }
+    return c;
 }
 
 static int coroutine_fn do_perform_cow_read(BlockDriverState *bs,
@@ -532,15 +599,15 @@ int qcow2_get_cluster_offset(BlockDriverState *bs, uint64_t offset,
                              unsigned int *bytes, uint64_t *cluster_offset)
 {
     BDRVQcow2State *s = bs->opaque;
-    unsigned int l2_index;
-    uint64_t l1_index, l2_offset, *l2_slice;
+    unsigned int l2_index, sc_index;
+    uint64_t l1_index, l2_offset, *l2_slice, l2_bitmap;
     int c;
     unsigned int offset_in_cluster;
     uint64_t bytes_available, bytes_needed, nb_clusters;
     QCow2ClusterType type;
     int ret;
 
-    offset_in_cluster = offset_into_cluster(s, offset);
+    offset_in_cluster = offset_into_subcluster(s, offset);
     bytes_needed = (uint64_t) *bytes + offset_in_cluster;
 
     /* compute how many bytes there are between the start of the cluster
@@ -587,7 +654,9 @@ int qcow2_get_cluster_offset(BlockDriverState *bs, uint64_t offset,
     /* find the cluster offset for the given disk offset */
 
     l2_index = offset_to_l2_slice_index(s, offset);
+    sc_index = offset_to_sc_index(s, offset);
     *cluster_offset = be64_to_cpu(l2_slice[L2IDX(l2_index)]);
+    l2_bitmap = be64_to_cpu(l2_slice[L2BM(l2_index)]);
 
     nb_clusters = size_to_clusters(s, bytes_needed);
     /* bytes_needed <= *bytes + offset_in_cluster, both of which are unsigned
@@ -595,7 +664,7 @@ int qcow2_get_cluster_offset(BlockDriverState *bs, uint64_t offset,
      * true */
     assert(nb_clusters <= INT_MAX);
 
-    type = qcow2_get_cluster_type(bs, *cluster_offset);
+    type = qcow2_get_subcluster_type(bs, *cluster_offset, l2_bitmap, sc_index);
     if (s->qcow_version < 3 && (type == QCOW2_CLUSTER_ZERO_PLAIN ||
                                 type == QCOW2_CLUSTER_ZERO_ALLOC)) {
         qcow2_signal_corruption(bs, true, -1, -1, "Zero cluster entry found"
@@ -621,15 +690,26 @@ int qcow2_get_cluster_offset(BlockDriverState *bs, uint64_t offset,
     case QCOW2_CLUSTER_ZERO_PLAIN:
     case QCOW2_CLUSTER_UNALLOCATED:
         /* how many empty clusters ? */
-        c = count_contiguous_clusters_unallocated(bs, nb_clusters,
-                                                  &l2_slice[L2IDX(l2_index)], type);
+        if (has_subclusters(s)) {
+            c = count_contiguous_subclusters_unallocated(bs, nb_clusters, sc_index,
+                                                         &l2_slice[L2IDX(l2_index)], type);
+        } else {
+            c = count_contiguous_clusters_unallocated(bs, nb_clusters,
+                                                      &l2_slice[L2IDX(l2_index)], type);
+        }
         *cluster_offset = 0;
         break;
     case QCOW2_CLUSTER_ZERO_ALLOC:
     case QCOW2_CLUSTER_NORMAL:
         /* how many allocated clusters ? */
-        c = count_contiguous_clusters(bs, nb_clusters, s->cluster_size,
-                                      &l2_slice[L2IDX(l2_index)], QCOW_OFLAG_ZERO);
+        if (has_subclusters(s)) {
+            c = count_contiguous_subclusters(bs, nb_clusters, sc_index,
+                                             &l2_slice[L2IDX(l2_index)],
+                                             QCOW_OFLAG_ZERO);
+        } else {
+            c = count_contiguous_clusters(bs, nb_clusters, s->cluster_size,
+                                          &l2_slice[L2IDX(l2_index)], QCOW_OFLAG_ZERO);
+        }
         *cluster_offset &= L2E_OFFSET_MASK;
         if (offset_into_cluster(s, *cluster_offset)) {
             qcow2_signal_corruption(bs, true, -1, -1,
@@ -658,7 +738,7 @@ int qcow2_get_cluster_offset(BlockDriverState *bs, uint64_t offset,
 
     qcow2_cache_put(s->l2_table_cache, (void **) &l2_slice);
 
-    bytes_available = (int64_t)c * s->cluster_size;
+    bytes_available = (int64_t)c * s->subcluster_size;
 
 out:
     if (bytes_available > bytes_needed) {
