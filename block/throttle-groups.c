@@ -501,6 +501,10 @@ void throttle_group_unregister_blk(BlockBackend *blk)
 
     qemu_mutex_lock(&tg->lock);
     for (i = 0; i < 2; i++) {
+        if (timer_pending(blkp->throttle_timers.timers[i])) {
+            tg->any_timer_armed[i] = false;
+            schedule_next_request(blk, i);
+        }
         if (tg->tokens[i] == blk) {
             BlockBackend *token = throttle_group_next_blk(blk);
             /* Take care of the case where this is the last blk in the group */
