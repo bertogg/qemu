@@ -72,6 +72,11 @@
 /* The cluster reads as all zeros */
 #define QCOW_OFLAG_ZERO (1ULL << 0)
 
+/* The subcluster X (0..31) reads as all zeros */
+#define QCOW_OFLAG_SUB_ZERO(X) (1ULL << (32 + (X)))
+/* The subcluster X (0..31) is allocated */
+#define QCOW_OFLAG_SUB_ALLOC(X) (1ULL << (X))
+
 #define MIN_CLUSTER_BITS 9
 #define MAX_CLUSTER_BITS 21
 
@@ -582,6 +587,27 @@ static inline QCow2ClusterType qcow2_get_cluster_type(BlockDriverState *bs,
     } else {
         return QCOW2_CLUSTER_NORMAL;
     }
+}
+
+static inline int qcow2_get_subcluster_type(BlockDriverState *bs,
+                                            uint64_t l2_entry,
+                                            uint64_t l2_bitmap,
+                                            unsigned sc_index)
+{
+    BDRVQcow2State *s = bs->opaque;
+    QCow2ClusterType ret = qcow2_get_cluster_type(bs, l2_entry);
+    assert(sc_index < s->subclusters_per_cluster);
+
+    if (ret == QCOW2_CLUSTER_NORMAL && has_subclusters(s)) {
+        if (l2_bitmap & QCOW_OFLAG_SUB_ZERO(sc_index)) {
+            return QCOW2_CLUSTER_ZERO_ALLOC;
+        }
+        if (!(l2_bitmap & QCOW_OFLAG_SUB_ALLOC(sc_index))) {
+            return QCOW2_CLUSTER_UNALLOCATED;
+        }
+    }
+
+    return ret;
 }
 
 /* Check whether refcounts are eager or lazy */
