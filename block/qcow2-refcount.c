@@ -1245,7 +1245,7 @@ int qcow2_update_snapshot_refcount(BlockDriverState *bs,
     uint64_t *l1_table, *l2_slice, l2_offset, entry, l1_size2, refcount;
     bool l1_allocated = false;
     int64_t old_entry, old_l2_offset;
-    unsigned slice, slice_size2, n_slices;
+    unsigned slice, n_slices;
     int i, j, l1_modified = 0, nb_csectors;
     int ret;
 
@@ -1254,8 +1254,7 @@ int qcow2_update_snapshot_refcount(BlockDriverState *bs,
     l2_slice = NULL;
     l1_table = NULL;
     l1_size2 = l1_size * sizeof(uint64_t);
-    slice_size2 = s->l2_slice_size * sizeof(uint64_t);
-    n_slices = s->cluster_size / slice_size2;
+    n_slices = s->cluster_size / s->l2_slice_size2;
 
     s->cache_discards = true;
 
@@ -1300,7 +1299,7 @@ int qcow2_update_snapshot_refcount(BlockDriverState *bs,
 
             for (slice = 0; slice < n_slices; slice++) {
                 ret = qcow2_cache_get(bs, s->l2_table_cache,
-                                      l2_offset + slice * slice_size2,
+                                      l2_offset + slice * s->l2_slice_size2,
                                       (void **) &l2_slice);
                 if (ret < 0) {
                     goto fail;
@@ -1310,7 +1309,7 @@ int qcow2_update_snapshot_refcount(BlockDriverState *bs,
                     uint64_t cluster_index;
                     uint64_t offset;
 
-                    entry = be64_to_cpu(l2_slice[j]);
+                    entry = be64_to_cpu(l2_slice[L2IDX(j)]);
                     old_entry = entry;
                     entry &= ~QCOW_OFLAG_COPIED;
                     offset = entry & L2E_OFFSET_MASK;
@@ -1384,7 +1383,8 @@ int qcow2_update_snapshot_refcount(BlockDriverState *bs,
                             qcow2_cache_set_dependency(bs, s->l2_table_cache,
                                                        s->refcount_block_cache);
                         }
-                        l2_slice[j] = cpu_to_be64(entry);
+                        l2_slice[L2IDX(j)] = cpu_to_be64(entry);
+                        /* FIXME: check if the bitmap needs to be udpated */
                         qcow2_cache_entry_mark_dirty(s->l2_table_cache,
                                                      l2_slice);
                     }
@@ -1602,13 +1602,12 @@ static int check_refcounts_l2(BlockDriverState *bs, BdrvCheckResult *res,
     BDRVQcow2State *s = bs->opaque;
     uint64_t *l2_table, l2_entry;
     uint64_t next_contiguous_offset = 0;
-    int i, l2_size, nb_csectors, ret;
+    int i, nb_csectors, ret;
 
     /* Read L2 table from disk */
-    l2_size = s->l2_size * sizeof(uint64_t);
-    l2_table = g_malloc(l2_size);
+    l2_table = g_malloc(s->l2_size2);
 
-    ret = bdrv_pread(bs->file, l2_offset, l2_table, l2_size);
+    ret = bdrv_pread(bs->file, l2_offset, l2_table, s->l2_size2);
     if (ret < 0) {
         fprintf(stderr, "ERROR: I/O error in check_refcounts_l2\n");
         res->check_errors++;
@@ -1617,7 +1616,7 @@ static int check_refcounts_l2(BlockDriverState *bs, BdrvCheckResult *res,
 
     /* Do the actual checks */
     for(i = 0; i < s->l2_size; i++) {
-        l2_entry = be64_to_cpu(l2_table[i]);
+        l2_entry = be64_to_cpu(l2_table[L2IDX(i)]);
 
         switch (qcow2_get_cluster_type(bs, l2_entry)) {
         case QCOW2_CLUSTER_COMPRESSED:
@@ -1686,7 +1685,7 @@ static int check_refcounts_l2(BlockDriverState *bs, BdrvCheckResult *res,
                                            QCOW2_OL_INACTIVE_L2;
 
                         l2_entry = QCOW_OFLAG_ZERO;
-                        l2_table[i] = cpu_to_be64(l2_entry);
+                        l2_table[L2IDX(i)] = cpu_to_be64(l2_entry);
                         ret = qcow2_pre_write_overlap_check(bs, ign,
                                 l2e_offset, sizeof(uint64_t), false);
                         if (ret < 0) {
@@ -1698,7 +1697,7 @@ static int check_refcounts_l2(BlockDriverState *bs, BdrvCheckResult *res,
                         }
 
                         ret = bdrv_pwrite_sync(bs->file, l2e_offset,
-                                               &l2_table[i], sizeof(uint64_t));
+                                               &l2_table[L2IDX(i)], sizeof(uint64_t) * s->l2_entry_size);
                         if (ret < 0) {
                             fprintf(stderr, "ERROR: Failed to overwrite L2 "
                                     "table entry: %s\n", strerror(-ret));
@@ -1904,8 +1903,7 @@ static int check_oflag_copied(BlockDriverState *bs, BdrvCheckResult *res,
             }
         }
 
-        ret = bdrv_pread(bs->file, l2_offset, l2_table,
-                         s->l2_size * sizeof(uint64_t));
+        ret = bdrv_pread(bs->file, l2_offset, l2_table, s->l2_size2);
         if (ret < 0) {
             fprintf(stderr, "ERROR: Could not read L2 table: %s\n",
                     strerror(-ret));
@@ -1914,7 +1912,7 @@ static int check_oflag_copied(BlockDriverState *bs, BdrvCheckResult *res,
         }
 
         for (j = 0; j < s->l2_size; j++) {
-            uint64_t l2_entry = be64_to_cpu(l2_table[j]);
+            uint64_t l2_entry = be64_to_cpu(l2_table[L2IDX(j)]);
             uint64_t data_offset = l2_entry & L2E_OFFSET_MASK;
             QCow2ClusterType cluster_type = qcow2_get_cluster_type(bs, l2_entry);
 
@@ -1937,7 +1935,7 @@ static int check_oflag_copied(BlockDriverState *bs, BdrvCheckResult *res,
                             "l2_entry=%" PRIx64 " refcount=%" PRIu64 "\n",
                             repair ? "Repairing" : "ERROR", l2_entry, refcount);
                     if (repair) {
-                        l2_table[j] = cpu_to_be64(refcount == 1
+                        l2_table[L2IDX(j)] = cpu_to_be64(refcount == 1
                                     ? l2_entry |  QCOW_OFLAG_COPIED
                                     : l2_entry & ~QCOW_OFLAG_COPIED);
                         l2_dirty++;

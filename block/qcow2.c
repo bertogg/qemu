@@ -826,7 +826,7 @@ static void read_cache_sizes(BlockDriverState *bs, QemuOpts *opts,
     bool l2_cache_entry_size_set;
     int min_refcount_cache = MIN_REFCOUNT_CACHE_SIZE * s->cluster_size;
     uint64_t virtual_disk_size = bs->total_sectors * BDRV_SECTOR_SIZE;
-    uint64_t max_l2_cache = virtual_disk_size / (s->cluster_size / 8);
+    uint64_t max_l2_cache = virtual_disk_size / (s->cluster_size / (sizeof(uint64_t) * s->l2_entry_size));
 
     combined_cache_size_set = qemu_opt_get(opts, QCOW2_OPT_CACHE_SIZE);
     l2_cache_size_set = qemu_opt_get(opts, QCOW2_OPT_L2_CACHE_SIZE);
@@ -1151,6 +1151,7 @@ static void qcow2_update_options_commit(BlockDriverState *bs,
     s->l2_table_cache = r->l2_table_cache;
     s->refcount_block_cache = r->refcount_block_cache;
     s->l2_slice_size = r->l2_slice_size;
+    s->l2_slice_size2 = r->l2_slice_size * sizeof(uint64_t) * s->l2_entry_size;
 
     s->overlap_check = r->overlap_check;
     s->use_lazy_refcounts = r->use_lazy_refcounts;
@@ -1385,8 +1386,9 @@ static int coroutine_fn qcow2_do_open(BlockDriverState *bs, QDict *options,
         bs->encrypted = true;
     }
 
-    s->l2_bits = s->cluster_bits - 3; /* L2 is always one cluster */
-    s->l2_size = 1 << s->l2_bits;
+    s->l2_size = s->cluster_size / sizeof(uint64_t) / s->l2_entry_size;
+    s->l2_bits = ctz32(s->l2_size);
+    s->l2_size2 = s->l2_size + sizeof(uint64_t) * s->l2_entry_size;
     /* 2^(s->refcount_order - 3) is the refcount width in bytes */
     s->refcount_block_bits = s->cluster_bits - (s->refcount_order - 3);
     s->refcount_block_size = 1 << s->refcount_block_bits;

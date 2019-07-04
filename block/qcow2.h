@@ -77,6 +77,9 @@
 /* The subcluster X (0..31) is allocated */
 #define QCOW_OFLAG_SUB_ALLOC(X) (1ULL << (X))
 
+#define L2IDX(X) ((X) * s->l2_entry_size)
+#define L2BM(X) (has_subclusters(s) ? (L2IDX(X) + 1) : L2IDX(X))
+
 #define MIN_CLUSTER_BITS 9
 #define MAX_CLUSTER_BITS 21
 
@@ -282,12 +285,14 @@ typedef struct BDRVQcow2State {
     int cluster_bits;
     int cluster_size;
     int l2_slice_size;
+    int l2_slice_size2;
     int subcluster_size;
     int subcluster_bits;
     int subclusters_per_cluster;
     int l2_entry_size; /* in uint64_t, not bytes */
     int l2_bits;
     int l2_size;
+    int l2_size2;
     int l1_size;
     int l1_vm_state_index;
     int refcount_block_bits;
