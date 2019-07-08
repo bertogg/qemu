@@ -1397,10 +1397,10 @@ static int handle_alloc(BlockDriverState *bs, uint64_t guest_offset,
     uint64_t *host_offset, uint64_t *bytes, QCowL2Meta **m)
 {
     BDRVQcow2State *s = bs->opaque;
-    int l2_index;
+    int l2_index, sc_index;
     uint64_t *l2_slice;
     uint64_t entry;
-    uint64_t nb_clusters;
+    uint64_t nb_clusters, nb_subclusters;
     int ret;
     bool keep_old_clusters = false;
 
@@ -1416,10 +1416,14 @@ static int handle_alloc(BlockDriverState *bs, uint64_t guest_offset,
      */
     nb_clusters =
         size_to_clusters(s, offset_into_cluster(s, guest_offset) + *bytes);
+    nb_subclusters =
+        size_to_subclusters(s, offset_into_subcluster(s, guest_offset) + *bytes);
 
     l2_index = offset_to_l2_slice_index(s, guest_offset);
+    sc_index = offset_to_sc_index(s, guest_offset);
     nb_clusters = MIN(nb_clusters, s->l2_slice_size - l2_index);
-    assert(nb_clusters <= INT_MAX);
+    nb_subclusters = MIN(nb_subclusters, nb_clusters * s->subclusters_per_cluster - sc_index);
+    assert(nb_subclusters <= INT_MAX);
 
     /* Find L2 entry for the first involved cluster */
     ret = get_cluster_table(bs, guest_offset, &l2_slice, &l2_index);
@@ -1432,19 +1436,22 @@ static int handle_alloc(BlockDriverState *bs, uint64_t guest_offset,
     /* For the moment, overwrite compressed clusters one by one */
     if (entry & QCOW_OFLAG_COMPRESSED) {
         nb_clusters = 1;
+        /* FIXME: this needs changes for subclusters? */
     } else {
         nb_clusters = count_cow_clusters(bs, nb_clusters, l2_slice, l2_index);
     }
 
+    nb_subclusters = MIN(nb_subclusters, nb_clusters * s->subclusters_per_cluster - sc_index);
+
     /* This function is only called when there were no non-COW clusters, so if
      * we can't find any unallocated or COW clusters either, something is
      * wrong with our code. */
-    assert(nb_clusters > 0);
+    assert(nb_clusters > 0 && nb_subclusters > 0);
 
     if (qcow2_get_cluster_type(bs, entry) == QCOW2_CLUSTER_ZERO_ALLOC &&
         (entry & QCOW_OFLAG_COPIED) &&
         (*host_offset == INV_OFFSET ||
-         start_of_cluster(s, *host_offset) == (entry & L2E_OFFSET_MASK)))
+         start_of_cluster(s, *host_offset) == (entry & L2E_OFFSET_MASK))) /* FIXME: is this correct? */
     {
         int preallocated_nb_clusters;
 
@@ -1494,6 +1501,8 @@ static int handle_alloc(BlockDriverState *bs, uint64_t guest_offset,
         assert(alloc_cluster_offset != INV_OFFSET);
     }
 
+    nb_subclusters = MIN(nb_subclusters, nb_clusters * s->subclusters_per_cluster - sc_index);
+
     /*
      * Save info needed for meta data update.
      *
@@ -1508,8 +1517,8 @@ static int handle_alloc(BlockDriverState *bs, uint64_t guest_offset,
      * newly allocated cluster to the end of the area that the write
      * request actually writes to (excluding COW at the end)
      */
-    uint64_t requested_bytes = *bytes + offset_into_cluster(s, guest_offset);
-    int avail_bytes = MIN(INT_MAX, nb_clusters << s->cluster_bits);
+    uint64_t requested_bytes = *bytes + offset_into_subcluster(s, guest_offset);
+    int avail_bytes = MIN(INT_MAX, nb_subclusters << s->subcluster_bits);
     int nb_bytes = MIN(requested_bytes, avail_bytes);
     QCowL2Meta *old_m = *m;
 
@@ -1525,11 +1534,11 @@ static int handle_alloc(BlockDriverState *bs, uint64_t guest_offset,
         .keep_old_clusters  = keep_old_clusters,
 
         .cow_start = {
-            .offset     = 0,
-            .nb_bytes   = offset_into_cluster(s, guest_offset),
+            .offset     = sc_index * s->subcluster_size,
+            .nb_bytes   = offset_into_subcluster(s, guest_offset),
         },
         .cow_end = {
-            .offset     = nb_bytes,
+            .offset     = nb_bytes + sc_index * s->subcluster_size,
             .nb_bytes   = avail_bytes - nb_bytes,
         },
     };
@@ -1537,7 +1546,7 @@ static int handle_alloc(BlockDriverState *bs, uint64_t guest_offset,
     QLIST_INSERT_HEAD(&s->cluster_allocs, *m, next_in_flight);
 
     *host_offset = alloc_cluster_offset + offset_into_cluster(s, guest_offset);
-    *bytes = MIN(*bytes, nb_bytes - offset_into_cluster(s, guest_offset));
+    *bytes = MIN(*bytes, nb_bytes - offset_into_subcluster(s, guest_offset));
     assert(*bytes != 0);
 
     return 1;
