@@ -1234,7 +1234,7 @@ static int handle_copied(BlockDriverState *bs, uint64_t guest_offset,
     uint64_t *host_offset, uint64_t *bytes, QCowL2Meta **m)
 {
     BDRVQcow2State *s = bs->opaque;
-    int l2_index;
+    int l2_index, sc_index;
     uint64_t cluster_offset;
     uint64_t *l2_slice;
     uint64_t nb_clusters;
@@ -1255,6 +1255,7 @@ static int handle_copied(BlockDriverState *bs, uint64_t guest_offset,
         size_to_clusters(s, offset_into_cluster(s, guest_offset) + *bytes);
 
     l2_index = offset_to_l2_slice_index(s, guest_offset);
+    sc_index = offset_to_sc_index(s, guest_offset);
     nb_clusters = MIN(nb_clusters, s->l2_slice_size - l2_index);
     assert(nb_clusters <= INT_MAX);
 
@@ -1296,9 +1297,64 @@ static int handle_copied(BlockDriverState *bs, uint64_t guest_offset,
                                       QCOW_OFLAG_COPIED | QCOW_OFLAG_ZERO);
         assert(keep_clusters <= nb_clusters);
 
-        *bytes = MIN(*bytes,
-                 keep_clusters * s->cluster_size
-                 - offset_into_cluster(s, guest_offset));
+        /* requested bytes + cow_start */
+        int nb_bytes = *bytes + offset_into_subcluster(s, guest_offset);
+        /* No. of bytes from cow_start till the end of the last cluster */
+        int avail_bytes = MIN(INT_MAX, (keep_clusters << s->cluster_bits) -
+                              (sc_index * s->subcluster_size));
+        /* requested bytes + cow_start (but only as many as available) */
+        nb_bytes = MIN(nb_bytes, avail_bytes);
+        /* Actual number of bytes to write - FIXME: no need to use MIN() ? */
+        *bytes = MIN(*bytes, nb_bytes - offset_into_subcluster(s, guest_offset));
+
+        if (has_subclusters(s)) {
+            uint64_t cow_start_offset = sc_index * s->subcluster_size;
+            uint64_t cow_end_offset = cow_start_offset + nb_bytes;
+            unsigned cow_start_bytes = offset_into_subcluster(s, guest_offset);
+            unsigned cow_end_bytes = s->subcluster_size - offset_into_subcluster(s, cow_end_offset);
+            uint64_t l2_bitmap =  be64_to_cpu(l2_slice[L2BM(l2_index)]);
+            if (offset_into_subcluster(s, cow_end_offset) == 0) {
+                cow_end_bytes = 0;
+            }
+            if (cow_start_bytes &&
+                qcow2_get_subcluster_type(bs, cluster_offset, l2_bitmap, sc_index) == QCOW2_CLUSTER_NORMAL) {
+                cow_start_offset += cow_start_bytes;
+                cow_start_bytes = 0;
+            }
+            if (cow_end_bytes) {
+                int sc_index_end = offset_to_sc_index(s, cow_end_offset);
+                int idx = l2_index + keep_clusters - 1;
+                uint64_t l2_entry_end = be64_to_cpu(l2_slice[L2IDX(idx)]);
+                l2_bitmap = be64_to_cpu(l2_slice[L2BM(idx)]);
+                if (qcow2_get_subcluster_type(bs, l2_entry_end, l2_bitmap, sc_index_end) == QCOW2_CLUSTER_NORMAL) {
+                    cow_end_bytes = 0;
+                }
+            }
+
+            /* We always need to create a QCowL2Meta to ensure that subcluster
+             * allocation bits get updated in qcow2_alloc_cluster_link_l2() */
+            QCowL2Meta *old_m = *m;
+            *m = g_malloc0(sizeof(**m));
+            **m = (QCowL2Meta) {
+                .next           = old_m,
+
+                .alloc_offset   = cluster_offset & L2E_OFFSET_MASK,
+                .offset         = start_of_cluster(s, guest_offset),
+                .nb_clusters    = keep_clusters,
+
+                .cow_start = {
+                    .offset     = cow_start_offset,
+                    .nb_bytes   = cow_start_bytes,
+                },
+                .cow_end = {
+                    .offset     = cow_end_offset,
+                    .nb_bytes   = cow_end_bytes,
+                },
+            };
+
+            qemu_co_queue_init(&(*m)->dependent_requests);
+            QLIST_INSERT_HEAD(&s->cluster_allocs, *m, next_in_flight);
+        }
 
         ret = 1;
     } else {
