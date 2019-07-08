@@ -1062,6 +1062,9 @@ int qcow2_alloc_cluster_link_l2(BlockDriverState *bs, QCowL2Meta *m)
 
     assert(l2_index + m->nb_clusters <= s->l2_slice_size);
     for (i = 0; i < m->nb_clusters; i++) {
+        bool needs_cow = false;
+        uint64_t l2_entry = be64_to_cpu(l2_slice[L2IDX(l2_index + i)]);
+        uint64_t l2_bitmap = be64_to_cpu(l2_slice[L2BM(l2_index + i)]);
         /* if two concurrent writes happen to the same unallocated cluster
          * each write allocates separate cluster and writes data concurrently.
          * The first one to complete updates l2 table with pointer to its
@@ -1069,11 +1072,49 @@ int qcow2_alloc_cluster_link_l2(BlockDriverState *bs, QCowL2Meta *m)
          * perform_cow()), update l2 table with its cluster pointer and free
          * old cluster. This is what this loop does */
         if (l2_slice[L2IDX(l2_index + i)] != 0) {
-            old_cluster[j++] = l2_slice[L2IDX(l2_index + i)];
+            if ((l2_entry & L2E_OFFSET_MASK) != cluster_offset + i * s->cluster_size) {
+                old_cluster[j++] = l2_slice[L2IDX(l2_index + i)];
+                needs_cow = true;
+            }
+        }
+
+        if (has_subclusters(s)) {
+            int sc;
+            uint64_t copied_start = cluster_offset + m->cow_start.offset;
+            uint64_t copied_end = cluster_offset + m->cow_end.offset + m->cow_end.nb_bytes;
+            if (needs_cow) {
+                for (sc = 0; sc < s->subclusters_per_cluster; sc++) {
+                    uint64_t sc_offset = cluster_offset + i * s->cluster_size + sc * s->subcluster_size;
+                    if ((sc_offset < copied_start || sc_offset >= copied_end) &&
+                        (l2_bitmap & QCOW_OFLAG_SUB_ALLOC(sc))) {
+                        QCowL2Meta m2 = { 0 };
+                        m2.offset = m->offset;
+                        m2.alloc_offset = m->alloc_offset;
+                        m2.nb_clusters = m->nb_clusters;
+                        m2.keep_old_clusters = m->keep_old_clusters;
+                        m2.cow_start.offset = sc_offset - cluster_offset;
+                        m2.cow_start.nb_bytes = s->subcluster_size;
+                        m2.cow_end.offset = m2.cow_start.offset + m2.cow_start.nb_bytes;
+                        if (perform_cow(bs, &m2) < 0) {
+                            fprintf(stderr, "Error performing cow!!\n");
+                        }
+                    }
+                }
+            }
+            for (sc = 0; sc < s->subclusters_per_cluster; sc++) {
+                uint64_t sc_offset = cluster_offset + i * s->cluster_size + sc * s->subcluster_size;
+                if (sc_offset >= copied_start && sc_offset < copied_end) {
+                    l2_bitmap |= QCOW_OFLAG_SUB_ALLOC(sc);
+                    l2_bitmap &= ~QCOW_OFLAG_SUB_ZERO(sc);
+                }
+            }
         }
 
         l2_slice[L2IDX(l2_index + i)] = cpu_to_be64((cluster_offset +
                     (i << s->cluster_bits)) | QCOW_OFLAG_COPIED);
+        if (has_subclusters(s)) {
+            l2_slice[L2BM(l2_index + i)] = cpu_to_be64(l2_bitmap);
+        }
      }
 
 
