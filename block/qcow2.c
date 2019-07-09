@@ -2182,6 +2182,21 @@ static int handle_alloc_space(BlockDriverState *bs, QCowL2Meta *l2meta)
     BDRVQcow2State *s = bs->opaque;
     QCowL2Meta *m;
 
+    /* Return without preallocating the cluster if subclusters are
+     * enabled.
+     * FIXME: allocating the full cluster is actually a good idea, so
+     * we should enable it and update the expected test output
+     * accordingly. We still need to check how slow it is. If it's too
+     * slow maybe we can simply try to preallocate the affected
+     * subclusters.
+     * FIXME: if we enable this, check that allocating a new
+     * subcluster inside a previously-allocated cluster does not empty
+     * the subclusters that are already allocated
+     */
+    if (has_subclusters(s)) {
+        return 0;
+    }
+
     if (!(s->data_file->bs->supported_zero_flags & BDRV_REQ_NO_FALLBACK)) {
         return 0;
     }
